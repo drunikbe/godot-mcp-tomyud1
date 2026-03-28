@@ -13,7 +13,7 @@ const RECONNECT_DELAY := 2.0
 const MAX_RECONNECT_DELAY := 10.0
 const MAX_PACKETS_PER_FRAME := 32
 
-var socket: WebSocketPeer
+var socket: WebSocketPeer = WebSocketPeer.new()
 var server_url: String = DEFAULT_URL
 var _is_connected := false
 var _reconnect_timer: Timer
@@ -24,7 +24,6 @@ var _initialized := false
 
 func _ready() -> void:
 	_project_path = ProjectSettings.globalize_path("res://")
-	socket = WebSocketPeer.new()
 
 	# Create reconnect timer
 	_reconnect_timer = Timer.new()
@@ -36,9 +35,11 @@ func _ready() -> void:
 func _process(_delta: float) -> void:
 	if not _initialized:
 		return
+	if socket.get_ready_state() == WebSocketPeer.STATE_CLOSED:
+		if _is_connected:
+			_handle_disconnect()
+		return
 
-	# Poll first — this drives the WebSocket state machine forward.
-	# Without polling, a fresh peer stays in STATE_CLOSED after connect_to_url().
 	socket.poll()
 
 	match socket.get_ready_state():
@@ -72,15 +73,8 @@ func disconnect_from_server() -> void:
 	_is_connected = false
 
 func _attempt_connection() -> void:
-	# Close the old peer cleanly before replacing it
-	if socket and socket.get_ready_state() != WebSocketPeer.STATE_CLOSED:
+	if socket.get_ready_state() != WebSocketPeer.STATE_CLOSED:
 		socket.close()
-	# Always create a fresh WebSocketPeer — reusing a closed peer can get
-	# stuck in STATE_CONNECTING forever (Godot issue #81839).
-	socket = WebSocketPeer.new()
-	# Clear connected flag before the new attempt so _process doesn't fire
-	# a spurious _handle_disconnect when it sees the new peer in STATE_CLOSED.
-	_is_connected = false
 
 	print("[MCP] Connecting to ", server_url, "...")
 	var err := socket.connect_to_url(server_url)
