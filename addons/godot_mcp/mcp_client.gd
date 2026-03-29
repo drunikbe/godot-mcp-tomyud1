@@ -35,12 +35,15 @@ func _ready() -> void:
 func _process(_delta: float) -> void:
 	if not _initialized:
 		return
+
+	# Poll first — drives the state machine forward. Without this,
+	# a peer stays STATE_CLOSED after connect_to_url() and never progresses.
+	socket.poll()
+
 	if socket.get_ready_state() == WebSocketPeer.STATE_CLOSED:
 		if _is_connected:
 			_handle_disconnect()
 		return
-
-	socket.poll()
 
 	match socket.get_ready_state():
 		WebSocketPeer.STATE_OPEN:
