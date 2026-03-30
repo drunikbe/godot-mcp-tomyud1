@@ -137,9 +137,19 @@ func validate_script(args: Dictionary) -> Dictionary:
 	var source_code := file.get_as_text()
 	file.close()
 
+	# Strip class_name declarations before validation. When a script with
+	# class_name is already registered in Godot's global class registry,
+	# creating a temporary GDScript with the same class_name triggers a false
+	# "Class X hides a global script class" parse error. The class_name line
+	# isn't needed for syntax validation — it only registers the class globally.
+	var validation_source := source_code
+	var cn_regex := RegEx.new()
+	cn_regex.compile("(?m)^class_name\\s+.+$")
+	validation_source = cn_regex.sub(validation_source, "# [stripped class_name for validation]")
+
 	# Create a fresh GDScript instance and assign the source for parsing.
 	var script := GDScript.new()
-	script.source_code = source_code
+	script.source_code = validation_source
 
 	# reload() triggers the parser/compiler and returns OK or an error code.
 	var err := script.reload()

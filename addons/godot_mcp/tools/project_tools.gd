@@ -891,7 +891,9 @@ func run_scene(args: Dictionary) -> Dictionary:
 	if not _editor_plugin:
 		return {&"ok": false, &"error": "Editor plugin not available"}
 	var ei := _editor_plugin.get_editor_interface()
-	var scene: String = str(args.get(&"scene", ""))
+	# Accept both "scene" and "scene_path" — the MCP schema uses "scene" but
+	# AI callers sometimes use "scene_path" by analogy with other tools.
+	var scene: String = str(args.get(&"scene", args.get(&"scene_path", "")))
 	if ei.is_playing_scene():
 		return {&"ok": false, &"error": "A scene is already running. Call stop_scene first."}
 	if scene == "current":
