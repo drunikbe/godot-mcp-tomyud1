@@ -58,7 +58,7 @@ import { serveVisualization, stopVisualizationServer, setGodotBridge } from './v
 
 // Server metadata
 const SERVER_NAME = 'godot-mcp-server';
-const SERVER_VERSION = '0.3.0-drunik.1';
+const SERVER_VERSION = '0.4.0-drunik.1';
 const WEBSOCKET_PORT = parseInt(process.env.GODOT_MCP_PORT || '6505', 10);
 const MCP_HTTP_PORT = parseInt(process.env.GODOT_MCP_HTTP_PORT || '6506', 10);
 const TOOL_TIMEOUT = parseInt(process.env.GODOT_MCP_TIMEOUT_MS || '30000', 10);

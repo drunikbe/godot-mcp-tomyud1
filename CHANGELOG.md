@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.4.0-drunik.1] - 2026-03-30
+
+### Added
+- **HTTP daemon mode (`--http`)** — run the server as a persistent daemon that serves multiple AI clients simultaneously via Streamable HTTP transport on port 6506, while sharing a single Godot WebSocket bridge on port 6505. Eliminates the "only one AI session at a time" limitation of stdio transport ([#24](https://github.com/tomyud1/godot-mcp/issues/24), [PR #25](https://github.com/tomyud1/godot-mcp/pull/25))
+- **Idle auto-shutdown** — in daemon mode, the server exits after 30s when Godot disconnects (configurable via `GODOT_MCP_IDLE_TIMEOUT_MS`), preventing orphan processes
+- **Plugin auto-start** — the Godot plugin automatically spawns the HTTP daemon on load if the built server is found at the expected path; detects existing daemon via port check to avoid duplicates; cross-platform (macOS/Linux/Windows)
+- **`npm run daemon`** script for starting the HTTP daemon
+
+### Fixed
+- **`validate_script` false positives with `class_name`** — scripts using `class_name` were reported as invalid because the temporary GDScript copy conflicted with the already-registered class in Godot's global registry. The tool now strips `class_name` before validation since it's a registration directive, not needed for syntax checking
+- **`run_scene` ignores `scene_path` parameter** — AI callers frequently passed `scene_path` instead of `scene` (by analogy with `create_scene`, `read_scene`), causing the main scene to launch instead. Added `scene_path` as an accepted alias
+
+### Changed
+- **Server architecture refactored** — tool handlers extracted into `createMcpServer()` factory function (required by MCP SDK for multi-session support). Each HTTP session gets its own `Server` instance sharing the single `GodotBridge`
+- **`express` added as direct dependency** — required for HTTP daemon mode (`createMcpExpressApp` from MCP SDK)
+
+### Environment variables (new)
+- `GODOT_MCP_HTTP_PORT` — HTTP port for MCP clients in daemon mode (default: 6506)
+- `GODOT_MCP_IDLE_TIMEOUT_MS` — idle shutdown grace period in ms (default: 30000)
+
+## [0.3.0-drunik.1] - 2026-03-28
+
+### Added
+- **`run_scene` / `stop_scene` / `is_playing` tools** — launch scenes, check play state, stop execution for autonomous edit-run-debug loops ([#18](https://github.com/tomyud1/godot-mcp/issues/18))
+- **`classdb_query` tool** — expose Godot's ClassDB to AI assistants to prevent API hallucination ([#19](https://github.com/tomyud1/godot-mcp/issues/19))
+- **`get_debugger_errors` tool** — read runtime debugger errors from the Debugger > Errors panel
+- **Configurable timeout and port** — `GODOT_MCP_TIMEOUT_MS` and `GODOT_MCP_PORT` environment variables ([#20](https://github.com/tomyud1/godot-mcp/issues/20))
+
+### Fixed
+- **Script validation bypasses resource cache** — validates from disk, not stale cache
+- **`rescan_filesystem` tool properly registered** and calls `update_script_classes()` after scan
+- **WebSocket reconnection reliability** — poll before state check prevents stuck connections
+- **Error messages propagate correctly** from Godot to MCP client
+
 ## [0.2.8] - 2026-03-14
 
 ### Fixed

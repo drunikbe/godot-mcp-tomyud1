@@ -4,7 +4,7 @@
 
 Build games faster with Claude, Cursor, or any MCP-compatible AI — no copy-pasting, no context switching. AI reads, writes, and manipulates your scenes, scripts, nodes, and project settings directly.
 
-> Godot 4.x · 32 tools · Interactive project visualizer · MIT license
+> Godot 4.x · 42 tools · Multi-session HTTP daemon · Interactive project visualizer · MIT license
 
 ---
 
@@ -93,16 +93,16 @@ Hit **Restart Project** in the Godot editor. Check the **top-right corner** — 
 
 ## What Can It Do?
 
-### 32 Tools Across 6 Categories
+### 42 Tools Across 6 Categories
 
 | Category | Tools | Examples |
 |----------|-------|---------|
-| **File Operations** | 4 | Browse directories, read files, search project, create scripts |
+| **File Operations** | 5 | Browse directories, read files, search project, create scripts, delete/rename files |
 | **Scene Operations** | 11 | Create scenes, add/remove/move nodes, set properties, attach scripts, assign collision shapes and textures |
 | **Script Operations** | 6 | Apply code edits, validate syntax, rename/move files with reference updates |
-| **Project Tools** | 9 | Read project settings, input map, collision layers, console errors, scene tree dumps |
+| **Project Tools** | 16 | Project settings, input map, collision layers, console/debugger errors, run/stop scenes, ClassDB queries, scene tree dumps, autoloads |
 | **Asset Generation** | 1 | Generate 2D sprites from SVG |
-| **Visualization** | 1 | Interactive browser-based project map |
+| **Visualization** | 2 | Interactive browser-based project map, scene dependency map |
 
 ### Interactive Visualizer
 
@@ -122,19 +122,38 @@ AI cannot create 100% of a game by itself — it struggles with complex UI layou
 
 ## Architecture
 
+**stdio mode** (default — one AI client per server):
 ```
 ┌─────────────┐    MCP (stdio)    ┌─────────────┐   WebSocket    ┌──────────────┐
 │  AI Client   │◄────────────────►│  MCP Server  │◄─────────────►│ Godot Editor │
 │  (Claude,    │                  │  (Node.js)   │   port 6505   │  (Plugin)    │
-│   Cursor)    │                  │              │               │              │
-└─────────────┘                  │  Visualizer  │               │  32 tool     │
-                                 │  HTTP :6510  │               │  handlers    │
-                                 └──────┬───────┘               └──────────────┘
-                                        │
-                                 ┌──────▼───────┐
-                                 │   Browser     │
-                                 │  Visualizer   │
-                                 └──────────────┘
+│   Cursor)    │                  └─────────────┘               └──────────────┘
+└─────────────┘
+```
+
+**HTTP daemon mode** (`--http` — multiple AI clients):
+```
+┌─────────────┐                   ┌─────────────┐   WebSocket    ┌──────────────┐
+│  Claude A    │◄─── HTTP ───────►│             │◄─────────────►│ Godot Editor │
+└─────────────┘    :6506          │  MCP Daemon  │   port 6505   │  (Plugin)    │
+┌─────────────┐                   │  (Node.js)   │               │              │
+│  Claude B    │◄─── HTTP ───────►│             │               │  42 tool     │
+└─────────────┘                   └─────────────┘               │  handlers    │
+                                                                └──────────────┘
+```
+
+Start the daemon: `npm run daemon` (or `node dist/index.js --http`)
+
+Client config for daemon mode:
+```json
+{
+  "mcpServers": {
+    "godot": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:6506/mcp"
+    }
+  }
+}
 ```
 
 ---
@@ -142,9 +161,8 @@ AI cannot create 100% of a game by itself — it struggles with complex UI layou
 ## Current Limitations
 
 - **Local only** — runs on localhost, no remote connections
-- **Single connection** — one Godot instance at a time
+- **Single Godot instance** — one Godot editor at a time (multiple AI clients supported in daemon mode)
 - **No undo** — changes save directly (use version control)
-- **No runtime control** — can't press play or simulate input
 - **AI is still limited in Godot knowledge** — it can't create 100% of the game alone, but it can help debug, write scripts, and tag along for the journey
 
 ---
