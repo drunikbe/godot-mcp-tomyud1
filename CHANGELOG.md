@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0] - 2026-04-01
+
+### Added
+- **Multi-session support (connect-or-spawn architecture)** — multiple AI clients (Claude, Cursor, Codex, etc.) can now use Godot tools simultaneously. The first instance becomes the primary server; subsequent instances automatically detect it and enter proxy mode, forwarding tool calls via HTTP. Zero configuration change — same stdio setup as before. ([#24](https://github.com/tomyud1/godot-mcp/issues/24))
+- **HTTP bridge for proxy communication** — primary server exposes a lightweight HTTP API on port 6506 (configurable via `GODOT_MCP_HTTP_PORT`) with health check and tool forwarding endpoints
+- **`GODOT_MCP_HTTP_PORT` env var** — configure the HTTP bridge port (default: 6506)
+- **`GODOT_MCP_IDLE_TIMEOUT_MS` env var** — configure how long the primary server stays alive after all clients and Godot disconnect (default: 30000ms)
+
+### Fixed
+- **"Transport closed" on Windows/Codex** — primary mode no longer exits when stdin closes; the server stays alive for proxy clients and Godot, only shutting down after an idle timeout when all connections are gone ([#16](https://github.com/tomyud1/godot-mcp/issues/16))
+- **Cross-platform `killProcessOnPort`** — replaced `execSync('sleep 1')` with async `setTimeout`, fixing the missing post-kill delay on Windows that caused `EADDRINUSE` race conditions
+- **Smarter zombie detection** — the server now probes for a healthy primary before killing anything on the port; only genuinely unresponsive processes get terminated, preventing one AI session from killing another's server
+- **Startup race condition** — when two instances start simultaneously and both try to become primary, the loser re-probes and falls back to proxy mode instead of killing the winner
+
 ## [0.3.0] - 2026-03-31
 
 ### Added

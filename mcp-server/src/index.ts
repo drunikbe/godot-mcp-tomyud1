@@ -3,15 +3,21 @@
  * Godot MCP Server
  *
  * An MCP server that provides Godot game engine tools to AI assistants.
- * Works with Claude Desktop, RAGy, or any MCP-compatible client.
+ * Works with Claude Desktop, Cursor, Codex, or any MCP-compatible client.
  *
- * Architecture:
- * - MCP protocol via stdio (for AI client communication)
- * - WebSocket server on port 6505 (for Godot plugin communication)
+ * Architecture (connect-or-spawn):
+ *   When started, the server probes for an existing primary instance.
+ *   - If found  → enters PROXY mode (forwards tool calls via HTTP)
+ *   - If absent → enters PRIMARY mode (owns Godot bridge + HTTP API)
  *
- * Modes:
- * - Mock mode: Returns fake data when Godot is not connected
- * - Live mode: Routes tool calls to Godot plugin via WebSocket
+ * Primary mode:
+ *   - WebSocket server on port 6505 for Godot plugin communication
+ *   - HTTP server on port 6506 for proxy instances
+ *   - MCP protocol via stdio for the launching AI client
+ *
+ * Proxy mode:
+ *   - MCP protocol via stdio for the launching AI client
+ *   - Forwards tool calls to the primary via HTTP
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -27,75 +33,35 @@ import { execSync } from 'child_process';
 import { allTools, toolExists } from './tools/index.js';
 import { GodotBridge } from './godot-bridge.js';
 import { serveVisualization, stopVisualizationServer, setGodotBridge } from './visualizer-server.js';
+import { PrimaryHttpServer, type ToolCallResult } from './primary-http.js';
+import { probeExistingServer, proxyToolCall } from './proxy-client.js';
 
-// Server metadata
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
 const SERVER_NAME = 'godot-mcp-server';
-const SERVER_VERSION = '0.3.0';
+const SERVER_VERSION = '0.4.0';
 const WEBSOCKET_PORT = parseInt(process.env.GODOT_MCP_PORT || '6505', 10);
+const HTTP_PORT = parseInt(process.env.GODOT_MCP_HTTP_PORT || '6506', 10);
 const TOOL_TIMEOUT = parseInt(process.env.GODOT_MCP_TIMEOUT_MS || '30000', 10);
+const IDLE_TIMEOUT = parseInt(process.env.GODOT_MCP_IDLE_TIMEOUT_MS || '30000', 10);
 
-// CLI args
 const args = process.argv.slice(2);
 const noForce = args.includes('--no-force');
 
-// Create MCP server
-const server = new Server(
-  { name: SERVER_NAME, version: SERVER_VERSION },
-  { capabilities: { tools: {} } }
-);
+// ---------------------------------------------------------------------------
+// Tool execution (shared logic used by both primary MCP handler & HTTP API)
+// ---------------------------------------------------------------------------
 
-// Create Godot bridge (WebSocket server)
-const godotBridge = new GodotBridge(WEBSOCKET_PORT, TOOL_TIMEOUT);
+let godotBridge: GodotBridge | null = null;
 
-// Set the bridge reference for the visualizer server
-setGodotBridge(godotBridge);
-
-// Log connection changes
-godotBridge.onConnectionChange((connected, info) => {
-  if (connected) {
-    console.error(`[${SERVER_NAME}] Godot connected`);
-  } else {
-    console.error(`[${SERVER_NAME}] Godot disconnected`);
-  }
-});
-
-/**
- * Handle ListTools request - returns all available tools
- */
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  // Add connection status tool dynamically
-  const connectionStatusTool = {
-    name: 'get_godot_status',
-    description: 'Check if Godot editor is connected to the MCP server.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {},
-      required: []
-    }
-  };
-
-  return {
-    tools: [
-      connectionStatusTool,
-      ...allTools.map(tool => ({
-        name: tool.name,
-        description: tool.description,
-        inputSchema: tool.inputSchema
-      }))
-    ]
-  };
-});
-
-/**
- * Handle CallTool request - executes a tool
- */
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-  const toolArgs = (args || {}) as Record<string, unknown>;
-
-  // Handle connection status check
+async function executeToolCall(
+  name: string,
+  toolArgs: Record<string, unknown>
+): Promise<ToolCallResult> {
   if (name === 'get_godot_status') {
-    const status = godotBridge.getStatus();
+    const status = godotBridge!.getStatus();
     return {
       content: [{
         type: 'text',
@@ -115,7 +81,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
-  // Validate tool exists
   if (!toolExists(name)) {
     throw new McpError(
       ErrorCode.MethodNotFound,
@@ -123,45 +88,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     );
   }
 
+  if (!godotBridge!.isConnected()) {
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          error: 'Godot editor is not connected',
+          tool: name,
+          hint: `Open a Godot project with the MCP plugin enabled. The plugin will auto-connect to this server on port ${WEBSOCKET_PORT}.`
+        }, null, 2)
+      }],
+      isError: true
+    };
+  }
+
   try {
-    let result: unknown;
+    const result = await godotBridge!.invokeTool(name, toolArgs);
 
-    if (godotBridge.isConnected()) {
-      // Live mode: Route to Godot via WebSocket
-      try {
-        result = await godotBridge.invokeTool(name, toolArgs);
-      } catch (error) {
-        // If Godot call fails, return error (don't fall back to mock)
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              error: errorMessage,
-              tool: name,
-              args: toolArgs,
-              mode: 'live',
-              hint: 'The tool call was sent to Godot but failed. Check Godot editor for details.'
-            }, null, 2)
-          }],
-          isError: true
-        };
-      }
-    } else {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            error: 'Godot editor is not connected',
-            tool: name,
-            hint: 'Open a Godot project with the MCP plugin enabled. The plugin will auto-connect to this server on port ' + WEBSOCKET_PORT + '.'
-          }, null, 2)
-        }],
-        isError: true
-      };
-    }
-
-    // Post-processing for visualization tools
     if (name === 'map_project' && result && typeof result === 'object' && 'project_map' in (result as Record<string, unknown>)) {
       try {
         const projectMap = (result as Record<string, unknown>).project_map;
@@ -177,7 +120,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }]
         };
       } catch (vizError) {
-        // If visualization fails, still return the data
         console.error(`[${SERVER_NAME}] Visualization failed:`, vizError);
       }
     }
@@ -196,29 +138,81 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         text: JSON.stringify({
           error: errorMessage,
           tool: name,
-          args: toolArgs
+          args: toolArgs,
+          mode: 'live',
+          hint: 'The tool call was sent to Godot but failed. Check Godot editor for details.'
         }, null, 2)
       }],
       isError: true
     };
   }
-});
+}
 
-/**
- * Kill any process currently listening on the given port.
- * Returns true if a process was killed, false otherwise.
- */
-function killProcessOnPort(port: number): boolean {
+// ---------------------------------------------------------------------------
+// MCP server factory (creates an MCP Server wired to a tool handler)
+// ---------------------------------------------------------------------------
+
+type ToolHandler = (name: string, args: Record<string, unknown>) => Promise<ToolCallResult>;
+
+function createMcpServer(handleTool: ToolHandler): Server {
+  const server = new Server(
+    { name: SERVER_NAME, version: SERVER_VERSION },
+    { capabilities: { tools: {} } }
+  );
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const connectionStatusTool = {
+      name: 'get_godot_status',
+      description: 'Check if Godot editor is connected to the MCP server.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {},
+        required: []
+      }
+    };
+
+    return {
+      tools: [
+        connectionStatusTool,
+        ...allTools.map(tool => ({
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema
+        }))
+      ]
+    };
+  });
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
+    const result = await handleTool(name, (args || {}) as Record<string, unknown>);
+    return result as { content: Array<{ type: string; text: string }>; isError?: boolean; [key: string]: unknown };
+  });
+
+  return server;
+}
+
+// ---------------------------------------------------------------------------
+// Kill process on port (only used as last resort)
+// ---------------------------------------------------------------------------
+
+async function killProcessOnPort(port: number): Promise<boolean> {
   try {
     const platform = process.platform;
     let pid: string | undefined;
 
     if (platform === 'win32') {
-      const output = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+      const output = execSync(
+        `netstat -ano | findstr :${port} | findstr LISTENING`,
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+      );
       const match = output.trim().split('\n')[0]?.match(/\s+(\d+)\s*$/);
       pid = match?.[1];
     } else {
-      const output = execSync(`lsof -ti :${port}`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+      const output = execSync(
+        `lsof -ti :${port}`,
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+      );
       pid = output.trim().split('\n')[0];
     }
 
@@ -227,79 +221,239 @@ function killProcessOnPort(port: number): boolean {
       if (pidNum === process.pid) return false;
       console.error(`[${SERVER_NAME}] Killing existing process on port ${port} (PID ${pid})...`);
       process.kill(pidNum, 'SIGTERM');
-      // Brief wait for the port to be released
-      execSync('sleep 1');
+      await new Promise(resolve => setTimeout(resolve, 1500));
       return true;
     }
   } catch {
-    // No process on port, or kill failed — either way, proceed
+    // No process on port, or kill failed — proceed
   }
   return false;
 }
 
-/**
- * Start the MCP server and WebSocket bridge
- */
-async function main() {
-  console.error(`[${SERVER_NAME}] Starting MCP server v${SERVER_VERSION}...`);
+// ---------------------------------------------------------------------------
+// PRIMARY MODE
+// ---------------------------------------------------------------------------
 
-  // Always clear the port unless --no-force is passed.
-  // MCP clients (Claude Desktop, Cursor) often leave zombie server processes
-  // when restarting, which block the new instance from binding.
+async function startPrimary(): Promise<void> {
+  console.error(`[${SERVER_NAME}] Starting in PRIMARY mode v${SERVER_VERSION}...`);
+
+  godotBridge = new GodotBridge(WEBSOCKET_PORT, TOOL_TIMEOUT);
+  setGodotBridge(godotBridge);
+
+  godotBridge.onConnectionChange((connected) => {
+    if (connected) {
+      console.error(`[${SERVER_NAME}] Godot connected`);
+      cancelIdleShutdown();
+    } else {
+      console.error(`[${SERVER_NAME}] Godot disconnected`);
+      maybeStartIdleShutdown();
+    }
+  });
+
+  // --- Start WebSocket bridge ---
   if (!noForce) {
-    killProcessOnPort(WEBSOCKET_PORT);
+    await killProcessOnPort(WEBSOCKET_PORT);
   }
 
-  // Start WebSocket server for Godot communication
   try {
     await godotBridge.start();
     console.error(`[${SERVER_NAME}] WebSocket server listening on port ${WEBSOCKET_PORT}`);
   } catch (error: unknown) {
     const err = error as NodeJS.ErrnoException;
     if (err.code === 'EADDRINUSE') {
-      console.error(`\n[${SERVER_NAME}] ❌ ERROR: Port ${WEBSOCKET_PORT} is already in use!`);
-      console.error(`[${SERVER_NAME}] Another process is running on this port and could not be killed.`);
-      console.error(`[${SERVER_NAME}] Godot will connect to the OTHER process, not this one.`);
-      console.error(`[${SERVER_NAME}]`);
-      console.error(`[${SERVER_NAME}] To fix manually:  lsof -ti :${WEBSOCKET_PORT} | xargs kill`);
-      console.error(`[${SERVER_NAME}]`);
-      console.error(`[${SERVER_NAME}] Godot CANNOT connect to this instance.\n`);
+      // Race condition: another instance may have just started.
+      // Retry probe with delays — the winner needs time to start its HTTP server.
+      console.error(`[${SERVER_NAME}] Port ${WEBSOCKET_PORT} in use, re-probing for primary...`);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+        const retry = await probeExistingServer(HTTP_PORT);
+        if (retry.alive) {
+          console.error(`[${SERVER_NAME}] Primary appeared during startup, switching to proxy mode`);
+          godotBridge.stop();
+          godotBridge = null;
+          return startProxy();
+        }
+      }
+
+      // Genuinely stuck — kill and retry once
+      console.error(`[${SERVER_NAME}] No healthy primary found, killing zombie on port ${WEBSOCKET_PORT}...`);
+      await killProcessOnPort(WEBSOCKET_PORT);
+      try {
+        await godotBridge.start();
+        console.error(`[${SERVER_NAME}] WebSocket server listening on port ${WEBSOCKET_PORT} (after retry)`);
+      } catch {
+        console.error(`[${SERVER_NAME}] ❌ Port ${WEBSOCKET_PORT} still unavailable after retry.`);
+        console.error(`[${SERVER_NAME}] To fix:  lsof -ti :${WEBSOCKET_PORT} | xargs kill`);
+        console.error(`[${SERVER_NAME}] Continuing without Godot bridge — tools will error.`);
+      }
     } else {
       console.error(`[${SERVER_NAME}] Failed to start WebSocket server:`, error);
-      console.error(`[${SERVER_NAME}] WebSocket disabled — tools will return errors until Godot connects.`);
+    }
+  }
+
+  // --- Start HTTP server for proxies ---
+  const httpServer = new PrimaryHttpServer(HTTP_PORT, SERVER_VERSION, executeToolCall);
+
+  try {
+    await httpServer.start();
+    console.error(`[${SERVER_NAME}] HTTP bridge listening on port ${HTTP_PORT}`);
+  } catch (error: unknown) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === 'EADDRINUSE') {
+      await killProcessOnPort(HTTP_PORT);
+      try {
+        await httpServer.start();
+        console.error(`[${SERVER_NAME}] HTTP bridge listening on port ${HTTP_PORT} (after retry)`);
+      } catch {
+        console.error(`[${SERVER_NAME}] ❌ Port ${HTTP_PORT} unavailable. Proxies won't be able to connect.`);
+      }
+    } else {
+      console.error(`[${SERVER_NAME}] Failed to start HTTP bridge:`, error);
     }
   }
 
   console.error(`[${SERVER_NAME}] Available tools: ${allTools.length + 1}`);
   console.error(`[${SERVER_NAME}] Waiting for Godot editor connection...`);
 
-  // Start MCP server (stdio transport)
+  // --- Connect stdio MCP transport ---
+  const server = createMcpServer(executeToolCall);
   const transport = new StdioServerTransport();
   await server.connect(transport);
-
   console.error(`[${SERVER_NAME}] MCP server connected and ready`);
+
+  // --- Shutdown logic ---
+  // In primary mode, stdin close does NOT kill the server.
+  // The server stays alive for proxy clients and Godot.
+  // Only an idle timeout (no Godot + no HTTP activity) triggers shutdown.
+  let stdinClosed = false;
+
+  process.stdin.on('close', () => {
+    stdinClosed = true;
+    console.error(`[${SERVER_NAME}] Direct MCP client disconnected (stdin closed)`);
+    maybeStartIdleShutdown();
+  });
+
+  let idleTimer: NodeJS.Timeout | null = null;
+
+  function maybeStartIdleShutdown(): void {
+    if (idleTimer) return; // already scheduled
+    if (godotBridge?.isConnected()) return;
+    if (!stdinClosed) return;
+
+    const msSinceHttpActivity = Date.now() - httpServer.getLastActivityTime();
+    if (msSinceHttpActivity < IDLE_TIMEOUT) {
+      // HTTP was recently active — schedule re-check for when the idle window expires
+      const recheckIn = IDLE_TIMEOUT - msSinceHttpActivity + 500;
+      idleTimer = setTimeout(() => {
+        idleTimer = null;
+        maybeStartIdleShutdown();
+      }, recheckIn);
+      return;
+    }
+
+    console.error(`[${SERVER_NAME}] No active connections, shutting down in ${IDLE_TIMEOUT / 1000}s...`);
+    idleTimer = setTimeout(() => {
+      // Re-check before actually exiting
+      if (godotBridge?.isConnected()) {
+        idleTimer = null;
+        maybeStartIdleShutdown();
+        return;
+      }
+      const stillHttpIdle = (Date.now() - httpServer.getLastActivityTime()) > IDLE_TIMEOUT;
+      if (!stillHttpIdle) {
+        idleTimer = null;
+        maybeStartIdleShutdown();
+        return;
+      }
+      shutdown();
+    }, IDLE_TIMEOUT);
+  }
+
+  function cancelIdleShutdown(): void {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+      console.error(`[${SERVER_NAME}] Idle shutdown cancelled — connection active`);
+    }
+  }
+
+  let isShuttingDown = false;
+  function shutdown(): void {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    console.error(`[${SERVER_NAME}] Shutting down...`);
+    if (idleTimer) clearTimeout(idleTimer);
+    stopVisualizationServer();
+    httpServer.stop();
+    godotBridge?.stop();
+    process.exit(0);
+  }
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
-// Handle graceful shutdown
-let isShuttingDown = false;
-function shutdown() {
-  if (isShuttingDown) return;
-  isShuttingDown = true;
-  console.error(`[${SERVER_NAME}] Shutting down...`);
-  stopVisualizationServer();
-  godotBridge.stop();
-  process.exit(0);
+// ---------------------------------------------------------------------------
+// PROXY MODE
+// ---------------------------------------------------------------------------
+
+async function startProxy(): Promise<void> {
+  console.error(`[${SERVER_NAME}] Starting in PROXY mode v${SERVER_VERSION} (primary on port ${HTTP_PORT})...`);
+
+  const handleTool: ToolHandler = async (name, args) => {
+    try {
+      return await proxyToolCall(HTTP_PORT, name, args, TOOL_TIMEOUT);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            error: `Failed to reach primary server: ${msg}`,
+            hint: 'The primary godot-mcp-server may have shut down. Restart your AI client to spawn a new one.'
+          }, null, 2)
+        }],
+        isError: true
+      };
+    }
+  };
+
+  const server = createMcpServer(handleTool);
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error(`[${SERVER_NAME}] Proxy MCP server connected and ready`);
+
+  // In proxy mode, stdin close means our client is gone. Exit cleanly.
+  let isShuttingDown = false;
+  function shutdown(): void {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    console.error(`[${SERVER_NAME}] Proxy shutting down...`);
+    process.exit(0);
+  }
+
+  process.stdin.on('close', shutdown);
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
 
-// When the MCP client (Claude, Cursor, etc.) exits, it closes our stdin.
-// Without this handler the Node process stays alive (held by the WebSocket
-// server) and the Godot plugin never sees a disconnect.
-process.stdin.on('close', shutdown);
+async function main(): Promise<void> {
+  // Step 1: Probe for an existing primary server
+  const probe = await probeExistingServer(HTTP_PORT);
 
-// Run
+  if (probe.alive) {
+    console.error(`[${SERVER_NAME}] Found existing primary server (v${probe.version})`);
+    return startProxy();
+  }
+
+  // Step 2: No primary found — become primary
+  return startPrimary();
+}
+
 main().catch((error) => {
   console.error(`[${SERVER_NAME}] Fatal error:`, error);
   process.exit(1);
