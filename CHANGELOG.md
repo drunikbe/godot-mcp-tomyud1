@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.1] - 2026-04-04
+
+### Added
+- **AI agent connection status in editor toolbar** — the toolbar indicator now distinguishes between three states: `MCP: Connecting...` (yellow, no server), `MCP: No Agent` (orange, server running but no AI client attached), and `MCP: Agent Active` (green, AI client connected). Previously "Connected" showed green even when the server was running with no AI client open. Supports multiple simultaneous agents (`MCP: Agents (N)`).
+
+### Fixed
+- **`get_input_map` missing project-defined actions** — custom actions (`jump`, `sprint`, etc.) were never returned because the editor's `InputMap` object only contains built-ins and actions added during the current session; project-defined actions live in `ProjectSettings`. The fix merges both sources so all actions are returned.
+- **`get_input_map` incorrect deadzone for project actions** — all actions were returning `0.2` (the built-in default) instead of the actual value from `project.godot`. Deadzones for project-defined actions are now read directly from `ProjectSettings` rather than from the editor's stale `InputMap`.
+- **`configure_input_map` deadzone ignored** — deadzone parameter is now correctly applied and persisted to `project.godot`
+- **`update_project_settings` corrupted input mappings** — `input/*` keys are now merged with existing settings (preserving the `events` array) instead of overwriting the whole entry; deadzone-only updates no longer wipe key bindings
+- **`list_settings` stale data documented** — description now explicitly states that values reflect the editor's in-memory state and direct edits to `project.godot` on disk are not reflected until the editor restarts (`rescan_filesystem` does not help)
+
 ## [0.4.0] - 2026-04-01
 
 ### Added

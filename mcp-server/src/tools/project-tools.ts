@@ -25,13 +25,13 @@ export const projectTools: ToolDefinition[] = [
   },
   {
     name: 'get_input_map',
-    description: 'Return the InputMap: action names mapped to events (keys, mouse, gamepad).',
+    description: 'Return the full InputMap: built-in actions (ui_*, spatial_editor/*) plus all project-defined actions from project.godot. Each action maps to an object with "events" (array of key/mouse/gamepad bindings) and optionally "deadzone". Use this before configure_input_map to see current bindings and deadzones.',
     inputSchema: {
       type: 'object',
       properties: {
         include_deadzones: {
           type: 'boolean',
-          description: 'Include axis values/deadzones for joypad motion'
+          description: 'Include the per-action "deadzone" field in each action object (default: true). When true, each action is {"deadzone": 0.5, "events": [...]}. When false, each action is {"events": [...]}.'
         }
       }
     }
@@ -124,7 +124,7 @@ export const projectTools: ToolDefinition[] = [
   },
   {
     name: 'list_settings',
-    description: 'Browse Godot project settings by category. Call without a category to see all available categories. Call with a category to see all settings in that category with their current values, types, and valid options.',
+    description: 'Browse Godot project settings by category. Returns values from the editor\'s in-memory state — this matches project.godot after a normal Godot save, but direct edits to project.godot on disk are not reflected until the editor restarts (rescan_filesystem does not help). Call without a category to see all available categories. Call with a category to see all settings with their current values, types, and valid options.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -137,7 +137,7 @@ export const projectTools: ToolDefinition[] = [
   },
   {
     name: 'update_project_settings',
-    description: 'Update one or more Godot project settings. Pass a dictionary of setting paths to their new values. Use list_settings first to discover available setting paths, current values, and valid options for a category.',
+    description: 'Update one or more Godot project settings. Pass a dictionary of setting paths to their new values. Use list_settings first to discover available setting paths, current values, and valid options for a category. For input action bindings, prefer configure_input_map — if you do pass input/* keys here, partial updates are merged safely (existing events are preserved).',
     inputSchema: {
       type: 'object',
       properties: {

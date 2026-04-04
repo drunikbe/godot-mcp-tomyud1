@@ -3,8 +3,10 @@
  * Allows proxy instances to forward tool calls and check health.
  *
  * Endpoints:
- *   GET  /health  → { server, version, godot_connected }
- *   POST /tool    → { name, args } → MCP-formatted result
+ *   GET  /health             → { server, version, godot_connected }
+ *   POST /tool               → { name, args } → MCP-formatted result
+ *   POST /client/register    → increment proxy client count
+ *   POST /client/unregister  → decrement proxy client count
  */
 
 import http from 'node:http';
@@ -27,6 +29,8 @@ export class PrimaryHttpServer {
   private serverVersion: string;
   private executeToolCall: ToolExecutor;
   private lastActivityTime = Date.now();
+  private proxyClientCount = 0;
+  private onClientCountChange: ((count: number) => void) | null = null;
 
   constructor(port: number, version: string, executor: ToolExecutor) {
     this.port = port;
@@ -36,6 +40,14 @@ export class PrimaryHttpServer {
 
   getLastActivityTime(): number {
     return this.lastActivityTime;
+  }
+
+  getProxyClientCount(): number {
+    return this.proxyClientCount;
+  }
+
+  setClientCountChangeCallback(cb: (count: number) => void): void {
+    this.onClientCountChange = cb;
   }
 
   start(): Promise<void> {
@@ -87,6 +99,22 @@ export class PrimaryHttpServer {
         const result = await this.executeToolCall(name, args || {});
         res.writeHead(200);
         res.end(JSON.stringify(result));
+        return;
+      }
+
+      if (req.method === 'POST' && req.url === '/client/register') {
+        this.proxyClientCount++;
+        this.onClientCountChange?.(this.proxyClientCount);
+        res.writeHead(200);
+        res.end(JSON.stringify({ proxy_clients: this.proxyClientCount }));
+        return;
+      }
+
+      if (req.method === 'POST' && req.url === '/client/unregister') {
+        this.proxyClientCount = Math.max(0, this.proxyClientCount - 1);
+        this.onClientCountChange?.(this.proxyClientCount);
+        res.writeHead(200);
+        res.end(JSON.stringify({ proxy_clients: this.proxyClientCount }));
         return;
       }
 

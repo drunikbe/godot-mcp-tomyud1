@@ -7,6 +7,7 @@ class_name MCPClient
 signal connected
 signal disconnected
 signal tool_requested(request_id: String, tool_name: String, args: Dictionary)
+signal client_count_changed(count: int)
 
 const DEFAULT_URL := "ws://127.0.0.1:6505"
 const RECONNECT_DELAY := 2.0
@@ -137,6 +138,9 @@ func _handle_message(json_string: String) -> void:
 			var args: Dictionary = message.get(&"args", {})
 			print("[MCP] Tool request: ", tool_name, " (", request_id, ")")
 			tool_requested.emit(request_id, tool_name, args)
+		"client_status":
+			var count: int = int(message.get(&"count", 0))
+			client_count_changed.emit(count)
 		_:
 			print("[MCP] Unknown message type: ", msg_type)
 

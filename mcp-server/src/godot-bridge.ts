@@ -273,6 +273,13 @@ export class GodotBridge {
   }
 
   /**
+   * Notify Godot of the current number of connected AI clients.
+   */
+  sendClientStatus(count: number): void {
+    this.sendMessage({ type: 'client_status', count } as unknown as WebSocketMessage);
+  }
+
+  /**
    * Send a message to Godot
    */
   private sendMessage(message: WebSocketMessage | ToolInvokeMessage): void {

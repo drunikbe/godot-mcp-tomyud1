@@ -28,6 +28,7 @@ func _enter_tree() -> void:
 	_mcp_client.connected.connect(_on_connected)
 	_mcp_client.disconnected.connect(_on_disconnected)
 	_mcp_client.tool_requested.connect(_on_tool_requested)
+	_mcp_client.client_count_changed.connect(_on_client_count_changed)
 
 	# Add status indicator to editor
 	_setup_status_indicator()
@@ -58,20 +59,30 @@ func _setup_status_indicator() -> void:
 	_status_label = Label.new()
 	_status_label.text = "MCP: Connecting..."
 	_status_label.add_theme_color_override("font_color", Color.YELLOW)
-	_status_label.add_theme_font_size_override("font_size", 12)
+	_status_label.add_theme_font_size_override("font_size", 20)
 	add_control_to_container(EditorPlugin.CONTAINER_TOOLBAR, _status_label)
 
 func _on_connected() -> void:
 	print("[Godot MCP] Connected to MCP server")
 	if _status_label:
-		_status_label.text = "MCP: Connected"
-		_status_label.add_theme_color_override("font_color", Color.GREEN)
+		_status_label.text = "MCP: No Agent"
+		_status_label.add_theme_color_override("font_color", Color(1.0, 0.6, 0.0))  # orange
 
 func _on_disconnected() -> void:
 	print("[Godot MCP] Disconnected from MCP server")
 	if _status_label:
 		_status_label.text = "MCP: Disconnected"
 		_status_label.add_theme_color_override("font_color", Color.RED)
+
+func _on_client_count_changed(count: int) -> void:
+	if not _status_label:
+		return
+	if count > 0:
+		_status_label.text = "MCP: Agent Active" if count == 1 else "MCP: Agents (%d)" % count
+		_status_label.add_theme_color_override("font_color", Color.GREEN)
+	else:
+		_status_label.text = "MCP: No Agent"
+		_status_label.add_theme_color_override("font_color", Color(1.0, 0.6, 0.0))  # orange
 
 func _on_tool_requested(request_id: String, tool_name: String, args: Dictionary) -> void:
 	"""Handle incoming tool request from MCP server."""

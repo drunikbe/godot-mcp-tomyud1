@@ -34,14 +34,14 @@ import { allTools, toolExists } from './tools/index.js';
 import { GodotBridge } from './godot-bridge.js';
 import { serveVisualization, stopVisualizationServer, setGodotBridge } from './visualizer-server.js';
 import { PrimaryHttpServer, type ToolCallResult } from './primary-http.js';
-import { probeExistingServer, proxyToolCall } from './proxy-client.js';
+import { probeExistingServer, proxyToolCall, registerProxyClient, unregisterProxyClient } from './proxy-client.js';
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
 const SERVER_NAME = 'godot-mcp-server';
-const SERVER_VERSION = '0.4.0';
+const SERVER_VERSION = '0.4.1';
 const WEBSOCKET_PORT = parseInt(process.env.GODOT_MCP_PORT || '6505', 10);
 const HTTP_PORT = parseInt(process.env.GODOT_MCP_HTTP_PORT || '6506', 10);
 const TOOL_TIMEOUT = parseInt(process.env.GODOT_MCP_TIMEOUT_MS || '30000', 10);
@@ -244,6 +244,7 @@ async function startPrimary(): Promise<void> {
     if (connected) {
       console.error(`[${SERVER_NAME}] Godot connected`);
       cancelIdleShutdown();
+      notifyClientStatus(); // send current client count immediately on connect
     } else {
       console.error(`[${SERVER_NAME}] Godot disconnected`);
       maybeStartIdleShutdown();
@@ -291,8 +292,17 @@ async function startPrimary(): Promise<void> {
     }
   }
 
+  // --- Track AI client count and push status to Godot ---
+  let directClientConnected = true; // stdin is open when we start = 1 direct client
+
+  function notifyClientStatus(): void {
+    const total = (directClientConnected ? 1 : 0) + httpServer.getProxyClientCount();
+    godotBridge?.sendClientStatus(total);
+  }
+
   // --- Start HTTP server for proxies ---
   const httpServer = new PrimaryHttpServer(HTTP_PORT, SERVER_VERSION, executeToolCall);
+  httpServer.setClientCountChangeCallback(() => notifyClientStatus());
 
   try {
     await httpServer.start();
@@ -329,7 +339,9 @@ async function startPrimary(): Promise<void> {
 
   process.stdin.on('close', () => {
     stdinClosed = true;
+    directClientConnected = false;
     console.error(`[${SERVER_NAME}] Direct MCP client disconnected (stdin closed)`);
+    notifyClientStatus();
     maybeStartIdleShutdown();
   });
 
@@ -423,12 +435,15 @@ async function startProxy(): Promise<void> {
   await server.connect(transport);
   console.error(`[${SERVER_NAME}] Proxy MCP server connected and ready`);
 
+  await registerProxyClient(HTTP_PORT);
+
   // In proxy mode, stdin close means our client is gone. Exit cleanly.
   let isShuttingDown = false;
-  function shutdown(): void {
+  async function shutdown(): Promise<void> {
     if (isShuttingDown) return;
     isShuttingDown = true;
     console.error(`[${SERVER_NAME}] Proxy shutting down...`);
+    await unregisterProxyClient(HTTP_PORT);
     process.exit(0);
   }
 

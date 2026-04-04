@@ -35,6 +35,28 @@ export async function probeExistingServer(port: number): Promise<ProbeResult> {
 }
 
 /**
+ * Register this proxy client with the primary (increments AI client count).
+ */
+export async function registerProxyClient(port: number): Promise<void> {
+  try {
+    await httpPost(`http://127.0.0.1:${port}/client/register`, '', REQUEST_TIMEOUT);
+  } catch {
+    // Non-fatal — primary may not support this endpoint yet
+  }
+}
+
+/**
+ * Unregister this proxy client from the primary (decrements AI client count).
+ */
+export async function unregisterProxyClient(port: number): Promise<void> {
+  try {
+    await httpPost(`http://127.0.0.1:${port}/client/unregister`, '', REQUEST_TIMEOUT);
+  } catch {
+    // Non-fatal
+  }
+}
+
+/**
  * Forward a tool call to the primary server.
  * Timeout is generous because Godot tool execution can be slow.
  */

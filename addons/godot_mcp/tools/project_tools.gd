@@ -113,7 +113,16 @@ func update_project_settings(args: Dictionary) -> Dictionary:
 
 	var updated: Array = []
 	for key: String in settings:
-		ProjectSettings.set_setting(key, settings[key])
+		if key.begins_with("input/"):
+			var existing = ProjectSettings.get_setting(key, {&"deadzone": 0.5, &"events": []})
+			var merged: Dictionary = {&"deadzone": 0.5, &"events": []}
+			if existing is Dictionary:
+				merged = existing.duplicate()
+			if settings[key] is Dictionary:
+				merged.merge(settings[key], true)
+			ProjectSettings.set_setting(key, merged)
+		else:
+			ProjectSettings.set_setting(key, settings[key])
 		updated.append(key)
 
 	_save_and_refresh_settings()
@@ -124,32 +133,66 @@ func update_project_settings(args: Dictionary) -> Dictionary:
 # =============================================================================
 func get_input_map(args: Dictionary) -> Dictionary:
 	var include_deadzones: bool = bool(args.get(&"include_deadzones", true))
-	var actions: Array = InputMap.get_actions()
-	actions.sort()
+
+	# Merge action names from both sources:
+	# - InputMap.get_actions() covers built-ins (ui_*, spatial_editor/*, etc.)
+	# - ProjectSettings input/* keys cover project-defined actions
+	# The editor InputMap only knows about built-ins + actions added via InputMap.add_action()
+	# during the current session; project.godot actions are NOT automatically loaded into it.
+	var all_actions: Dictionary = {}
+	for action: StringName in InputMap.get_actions():
+		all_actions[str(action)] = true
+	for prop: Dictionary in ProjectSettings.get_property_list():
+		var pname: String = prop[&"name"]
+		if pname.begins_with("input/"):
+			all_actions[pname.substr(6)] = true
+
+	var sorted_names: Array = all_actions.keys()
+	sorted_names.sort()
 
 	var result: Dictionary = {}
-	for action: StringName in actions:
+	for action_name: String in sorted_names:
+		var ps_key: String = "input/" + action_name
 		var events: Array = []
-		for e: InputEvent in InputMap.action_get_events(action):
-			var item := {&"type": e.get_class()}
+		var deadzone: float = 0.5
 
-			if e is InputEventKey:
-				var keycode = e.physical_keycode if e.physical_keycode != 0 else e.keycode
-				item[&"keycode"] = keycode
-				item[&"key_label"] = OS.get_keycode_string(keycode) if keycode != 0 else ""
-			elif e is InputEventMouseButton:
-				item[&"button_index"] = e.button_index
-			elif e is InputEventJoypadButton:
-				item[&"button_index"] = e.button_index
-			elif e is InputEventJoypadMotion:
-				item[&"axis"] = e.axis
-				if include_deadzones:
-					item[&"axis_value"] = e.axis_value
+		if ProjectSettings.has_setting(ps_key):
+			# Project-defined or overridden action — ProjectSettings is the source of truth.
+			# The editor InputMap may have a stale or default deadzone for these.
+			var ps_data = ProjectSettings.get_setting(ps_key, {})
+			if ps_data is Dictionary:
+				deadzone = float(ps_data.get(&"deadzone", 0.5))
+				for e in ps_data.get(&"events", []):
+					if not e is InputEvent:
+						continue
+					events.append(_describe_input_event(e))
+		elif InputMap.has_action(action_name):
+			# Pure built-in with no project override — read from InputMap directly.
+			deadzone = InputMap.action_get_deadzone(action_name)
+			for e: InputEvent in InputMap.action_get_events(action_name):
+				events.append(_describe_input_event(e))
 
-			events.append(item)
-		result[action] = events
+		var action_data := {&"events": events}
+		if include_deadzones:
+			action_data[&"deadzone"] = deadzone
+		result[action_name] = action_data
 
 	return {&"ok": true, &"actions": result, &"count": result.size()}
+
+func _describe_input_event(e: InputEvent) -> Dictionary:
+	var item := {&"type": e.get_class()}
+	if e is InputEventKey:
+		var keycode = e.physical_keycode if e.physical_keycode != 0 else e.keycode
+		item[&"keycode"] = keycode
+		item[&"key_label"] = OS.get_keycode_string(keycode) if keycode != 0 else ""
+	elif e is InputEventMouseButton:
+		item[&"button_index"] = e.button_index
+	elif e is InputEventJoypadButton:
+		item[&"button_index"] = e.button_index
+	elif e is InputEventJoypadMotion:
+		item[&"axis"] = e.axis
+		item[&"axis_value"] = e.axis_value
+	return item
 
 # =============================================================================
 # configure_input_map
@@ -181,6 +224,8 @@ func _input_map_add(action: String, args: Dictionary) -> Dictionary:
 	if not InputMap.has_action(action):
 		InputMap.add_action(action, deadzone)
 		created = true
+	else:
+		InputMap.action_set_deadzone(action, deadzone)
 
 	var added_events: Array = []
 	var event_errors: Array = []
