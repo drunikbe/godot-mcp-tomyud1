@@ -41,7 +41,7 @@ import { probeExistingServer, proxyToolCall, registerProxyClient, unregisterProx
 // ---------------------------------------------------------------------------
 
 const SERVER_NAME = 'godot-mcp-server';
-const SERVER_VERSION = '0.4.1';
+const SERVER_VERSION = '0.4.2';
 const WEBSOCKET_PORT = parseInt(process.env.GODOT_MCP_PORT || '6505', 10);
 const HTTP_PORT = parseInt(process.env.GODOT_MCP_HTTP_PORT || '6506', 10);
 const TOOL_TIMEOUT = parseInt(process.env.GODOT_MCP_TIMEOUT_MS || '30000', 10);
@@ -320,6 +320,17 @@ async function startPrimary(): Promise<void> {
     } else {
       console.error(`[${SERVER_NAME}] Failed to start HTTP bridge:`, error);
     }
+  }
+
+  // --- Verify servers started ---
+  if (!godotBridge.isListening()) {
+    console.error(`[${SERVER_NAME}] ❌ Fatal: WebSocket server failed to start. Godot cannot connect.`);
+    httpServer.stop();
+    process.exit(1);
+  }
+
+  if (!httpServer.isListening()) {
+    console.error(`[${SERVER_NAME}] ⚠️  HTTP server failed to start. Proxy clients will not work.`);
   }
 
   console.error(`[${SERVER_NAME}] Available tools: ${allTools.length + 1}`);

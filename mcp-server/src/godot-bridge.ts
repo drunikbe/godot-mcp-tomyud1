@@ -39,6 +39,7 @@ type ConnectionCallback = (connected: boolean, info?: GodotInfo) => void;
 
 export class GodotBridge {
   private wss: WebSocketServer | null = null;
+  private _listening = false;
   private godotConnection: WebSocket | null = null;
   private godotInfo: GodotInfo | null = null;
   private pendingRequests: Map<string, PendingRequest> = new Map();
@@ -71,6 +72,7 @@ export class GodotBridge {
         });
 
         this.wss.on('listening', () => {
+          this._listening = true;
           this.log('info', `WebSocket server listening on port ${this.port}`);
           resolve();
         });
@@ -85,6 +87,8 @@ export class GodotBridge {
    * Stop the WebSocket server
    */
   stop(): void {
+    this._listening = false;
+
     if (this.pingInterval) {
       clearInterval(this.pingInterval);
       this.pingInterval = null;
@@ -276,7 +280,7 @@ export class GodotBridge {
    * Notify Godot of the current number of connected AI clients.
    */
   sendClientStatus(count: number): void {
-    this.sendMessage({ type: 'client_status', count } as unknown as WebSocketMessage);
+    this.sendMessage({ type: 'client_status', count });
   }
 
   /**
@@ -286,6 +290,13 @@ export class GodotBridge {
     if (this.godotConnection?.readyState === WebSocket.OPEN) {
       this.godotConnection.send(JSON.stringify(message));
     }
+  }
+
+  /**
+   * Check if the WebSocket server is listening
+   */
+  isListening(): boolean {
+    return this._listening;
   }
 
   /**

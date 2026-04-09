@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.2] - 2026-04-09
+
+### Added
+- **Automated test suite** — 49 tests using Vitest covering GodotBridge (lifecycle, connection management, WebSocket protocol), PrimaryHttpServer (lifecycle, all HTTP endpoints), proxy client (probe, tool forwarding, register/unregister), and tool registry (schema validation, uniqueness). Run with `cd mcp-server && npm test`. ([#37](https://github.com/tomyud1/godot-mcp/issues/37))
+- **TESTING.md** — comprehensive test checklist (automated + manual pre-release) at the repo root, designed to be extended over time
+
+### Fixed
+- **Zombie process on non-EADDRINUSE startup failure** — if the WebSocket or HTTP server failed to start for a reason other than port conflict (e.g., invalid port, permission error), the process continued running but could never accept connections. Now the server exits with code 1 and a clear error message when the WebSocket server fails to bind. HTTP-only failure logs a warning but continues (direct client still works). Added `isListening()` to both `GodotBridge` and `PrimaryHttpServer` for post-startup health checks. ([#36](https://github.com/tomyud1/godot-mcp/issues/36))
+- **`sendClientStatus` type safety** — added `ClientStatusMessage` to the `WebSocketMessage` union type and removed the `as unknown as WebSocketMessage` double cast in `GodotBridge.sendClientStatus()`. The message is now properly type-checked.
+
 ## [0.4.1] - 2026-04-04
 
 ### Added

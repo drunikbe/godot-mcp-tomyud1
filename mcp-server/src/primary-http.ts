@@ -64,6 +64,10 @@ export class PrimaryHttpServer {
     });
   }
 
+  isListening(): boolean {
+    return this.server?.listening ?? false;
+  }
+
   stop(): void {
     if (this.server) {
       this.server.close();
